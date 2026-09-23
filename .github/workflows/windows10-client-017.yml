@@ -1,0 +1,151 @@
+name: Release 0.1.17 on actual Windows 10 client
+on:
+  push:
+    branches: [codex/published-startup-015-20260923]
+    paths:
+      - .github/workflows/windows10-client-017.yml
+      - diagnostics/windows10-017/candidate.json
+  workflow_dispatch:
+    inputs:
+      assetId:
+        description: GitHub release asset ID for ScreenTrail-0.1.17-Setup.exe
+        required: true
+        type: string
+      sha256:
+        description: Exact SHA256 of ScreenTrail-0.1.17-Setup.exe
+        required: true
+        type: string
+      bytes:
+        description: Exact byte length of ScreenTrail-0.1.17-Setup.exe
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  windows10:
+    # Reading unpublished draft assets requires this permission; no release writes occur.
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      INSTALLER_ASSET_ID: ${{ inputs.assetId }}
+      INSTALLER_SHA256: ${{ inputs.sha256 }}
+      INSTALLER_BYTES: ${{ inputs.bytes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate artifact identity and materialize pinned 0.1.17 harness
+        run: |
+          python3 diagnostics/windows10-017/prepare-pinned-inputs.py inputs/windows10-017 artifacts/windows10-017/installer-identity.json
+      - name: Prepare disposable virtualization host
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          # Remove only unused preinstalled SDKs from this disposable hosted runner.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils genisoimage aria2
+          df -h /
+      - name: Download the exact pinned 0.1.17 installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail --location --retry 2 --silent --show-error --max-time 300 --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/octet-stream' --output inputs/installer.exe "https://api.github.com/repos/ikk5515/ScreenTrail-releases/releases/assets/$INSTALLER_ASSET_ID"
+          test "$(stat -c '%s' inputs/installer.exe)" = "$INSTALLER_BYTES"
+          printf '%s  %s\n' "$INSTALLER_SHA256" inputs/installer.exe | sha256sum -c -
+      - name: Start Windows 10 client installation and real app startup
+        run: |
+          nohup bash -c 'set +e; bash inputs/windows10-017/run-windows10-vm.sh inputs/installer.exe inputs/windows10-017/Test-Windows10Startup.ps1 artifacts/windows10-017; code=$?; echo "$code" > artifacts/windows10-017/controller-exit-code.txt; exit "$code"' > artifacts/windows10-017/controller.log 2>&1 &
+          echo "$!" > artifacts/windows10-017/controller.pid
+      - name: Observe first installation progress
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10-017/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-017-progress-1
+          path: artifacts/windows10-017/
+          retention-days: 7
+      - name: Observe desktop startup progress
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10-017/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-017-progress-2
+          path: artifacts/windows10-017/
+          retention-days: 7
+      - name: Observe client verification progress 3
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10-017/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-017-progress-3
+          path: artifacts/windows10-017/
+          retention-days: 7
+      - name: Observe client verification progress 4
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10-017/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-017-progress-4
+          path: artifacts/windows10-017/
+          retention-days: 7
+      - name: Observe client verification progress 5
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10-017/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-017-progress-5
+          path: artifacts/windows10-017/
+          retention-days: 7
+      - name: Observe client verification progress 6
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10-017/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-017-progress-6
+          path: artifacts/windows10-017/
+          retention-days: 7
+      - name: Wait for bounded client verification
+        run: |
+          # Controller caps ISO acquisition at 20 minutes and the VM at 30 minutes.
+          # After the six 5-minute snapshots, allow its own deadline and cleanup to finish.
+          for attempt in $(seq 1 300); do
+            test ! -f artifacts/windows10-017/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -30 artifacts/windows10-017/controller.log
+          test -f artifacts/windows10-017/controller-exit-code.txt
+          exit "$(cat artifacts/windows10-017/controller-exit-code.txt)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows10-017-client-startup-results
+          path: artifacts/windows10-017/
+          retention-days: 14
+          if-no-files-found: warn

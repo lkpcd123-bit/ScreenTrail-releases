@@ -1,0 +1,98 @@
+name: Verify pinned clipboard release installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Expected numeric release version, for example 0.1.17
+        required: true
+        type: string
+      assetId:
+        description: GitHub release asset ID for the full installer
+        required: true
+        type: string
+      sha256:
+        description: Expected full installer SHA256
+        required: true
+        type: string
+      bytes:
+        description: Expected full installer byte count
+        required: true
+        type: string
+      harnessAssetId:
+        description: GitHub release asset ID for the four-file binary harness ZIP
+        required: true
+        type: string
+      harnessSha256:
+        description: Expected binary harness ZIP SHA256
+        required: true
+        type: string
+      harnessBytes:
+        description: Expected binary harness ZIP byte count
+        required: true
+        type: string
+  push:
+    branches: [codex/published-startup-015-20260923]
+    paths:
+      - .github/workflows/windows-clipboard-release-install.yml
+      - diagnostics/clipboard-release-017.json
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    # Unpublished draft assets require write access. This trusted job only reads
+    # the pinned assets; checkout never persists credentials or edits releases.
+    permissions:
+      contents: write
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install the pinned candidate, verify startup and its clipboard paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ASSET_ID: ${{ inputs.assetId }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_BYTES: ${{ inputs.bytes }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          HARNESS_ASSET_ID: ${{ inputs.harnessAssetId }}
+          HARNESS_SHA256: ${{ inputs.harnessSha256 }}
+          HARNESS_BYTES: ${{ inputs.harnessBytes }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $pin = [pscustomobject]@{
+              version = $env:CANDIDATE_VERSION; assetId = $env:CANDIDATE_ASSET_ID
+              sha256 = $env:CANDIDATE_SHA256; bytes = $env:CANDIDATE_BYTES
+              harnessAssetId = $env:HARNESS_ASSET_ID; harnessSha256 = $env:HARNESS_SHA256; harnessBytes = $env:HARNESS_BYTES
+            }
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'push') {
+            $pin = Get-Content -LiteralPath 'diagnostics/clipboard-release-017.json' -Raw | ConvertFrom-Json
+          } else { throw 'Unsupported workflow event.' }
+          $fields = @('version','assetId','sha256','bytes','harnessAssetId','harnessSha256','harnessBytes')
+          $actual = @($pin.PSObject.Properties.Name)
+          if ($actual.Count -ne 7 -or @($actual | Where-Object { $_ -cnotin $fields }).Count -ne 0) { throw 'The release manifest must contain exactly the seven expected fields.' }
+          foreach ($field in @('assetId','bytes','harnessAssetId','harnessBytes')) {
+            if ([string]$pin.$field -cnotmatch '\A[1-9][0-9]*\z') { throw "Invalid positive integer: $field" }
+          }
+          foreach ($field in @('sha256','harnessSha256')) {
+            if ([string]$pin.$field -notmatch '\A[a-fA-F0-9]{64}\z') { throw "Invalid SHA256: $field" }
+          }
+          if ([string]$pin.version -cnotmatch '\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z') { throw 'Invalid three-part numeric version.' }
+          $parameters = @{}
+          foreach ($field in $fields) { $parameters[$field] = $pin.$field }
+          ./scripts/Test-ClipboardReleaseInstall.ps1 @parameters
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-clipboard-release-install-${{ github.run_id }}
+          path: |
+            artifacts/clipboard-release-install/
+            artifacts/installed-clipboard/
+          retention-days: 14
+          if-no-files-found: warn
