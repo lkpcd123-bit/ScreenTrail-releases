@@ -27,18 +27,23 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
-for binary in qemu-system-x86_64 qemu-img genisoimage python3 curl sha256sum; do command -v "$binary" >/dev/null; done
+for binary in qemu-system-x86_64 qemu-img genisoimage python3 curl aria2c timeout sha256sum; do command -v "$binary" >/dev/null; done
 [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || { echo 'Readable/writable /dev/kvm required.' >&2; exit 1; }
 [[ -f "$installer" && -f "$guest_script" ]]
 if command -v lscpu >/dev/null; then lscpu --json > "$output/host-cpu.json"; fi
 cat /proc/cpuinfo > "$output/host-cpuinfo.txt"
 qemu-system-x86_64 --version > "$output/qemu-version.txt"
 df -h "$work" > "$output/host-disk-before.txt"
-printf '%s  %s\n' '36e9b34c7bdec0739fb52de6aeeee57e1c212ac37f20b1b5a3fd7832b507e77e' "$installer" | sha256sum -c -
+printf '%s  %s\n' 'e00b82b8077786483b1c3e7caa4d61dc35cf16f4c418c57a5af0ff06aecad0e8' "$installer" | sha256sum -c -
 iso="${WINDOWS10_ISO_PATH:-$work/windows10-eval.iso}"
 iso_url='https://software-static.download.prss.microsoft.com/dbazure/988969d5-f34g-4e03-ac9d-1f9786c66750/19045.2006.220908-0225.22h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso'
 iso_sha='ef7312733a9f5d7d51cfa04ac497671995674ca5e1058d5164d6028f0938d668'
-if [[ ! -f "$iso" ]]; then curl --fail --location --retry 2 --connect-timeout 30 --max-time 1200 "$iso_url" -o "$iso"; fi
+if [[ ! -f "$iso" ]]; then
+  timeout 1200 aria2c --max-connection-per-server=8 --split=8 --min-split-size=16M \
+    --file-allocation=none --auto-file-renaming=false --max-tries=3 --retry-wait=3 \
+    --connect-timeout=30 --timeout=60 --summary-interval=30 \
+    --dir "$(dirname "$iso")" --out "$(basename "$iso")" "$iso_url"
+fi
 printf '%s  %s\n' "$iso_sha" "$iso" | sha256sum -c -
 python3 - "$output/provenance.json" "$iso_url" "$iso_sha" <<'PY'
 import json, platform, sys
@@ -89,6 +94,7 @@ done
 # during initial BIOS/DVD startup; never send keys during later reboots/setup.
 sleep 3
 python3 "$infra_dir/qmp_screenshot.py" "$work/qmp.sock" --boot-key || true
+python3 "$infra_dir/qmp_screenshot.py" "$work/qmp.sock" "$output/first-desktop.ppm" "$output/guest-cpu.json" || true
 deadline=$((SECONDS + 1800))
 next_capture=$((SECONDS + 120))
 while (( SECONDS < deadline )); do

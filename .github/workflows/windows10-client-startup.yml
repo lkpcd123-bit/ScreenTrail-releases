@@ -1,4 +1,4 @@
-name: Published installer on actual Windows 10 client
+name: Compatibility 0.1.16 on actual Windows 10 client
 on:
   push:
     branches: [codex/published-startup-015-20260923]
@@ -10,7 +10,7 @@ permissions:
 jobs:
   windows10:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,19 +22,16 @@ jobs:
           # Remove only unused preinstalled SDKs from this disposable hosted runner.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils genisoimage
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils genisoimage aria2
           df -h /
-      - name: Download the exact existing published installer
+      - name: Download the exact published compatibility prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p inputs artifacts/windows10
-          curl --fail --location --retry 2 --silent --show-error --max-time 300 --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/octet-stream' --output inputs/installer.exe https://api.github.com/repos/ikk5515/ScreenTrail-releases/releases/assets/582987302
-          echo '36e9b34c7bdec0739fb52de6aeeee57e1c212ac37f20b1b5a3fd7832b507e77e  inputs/installer.exe' | sha256sum -c -
-          echo 'dd1e5069f491e230f35ca314784bd75dfffc791c1635d25011730c6137e6b713  diagnostics/windows10/candidate.exe' | sha256sum -c -
-      - name: Start Windows 10 client installation and launch comparison
-        env:
-          CANDIDATE_APPHOST_PATH: diagnostics/windows10/candidate.exe
+          curl --fail --location --retry 2 --silent --show-error --max-time 300 --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/octet-stream' --output inputs/installer.exe https://api.github.com/repos/ikk5515/ScreenTrail-releases/releases/assets/583177923
+          echo 'e00b82b8077786483b1c3e7caa4d61dc35cf16f4c418c57a5af0ff06aecad0e8  inputs/installer.exe' | sha256sum -c -
+      - name: Start Windows 10 client installation and real app startup
         run: |
           nohup bash -c 'set +e; bash diagnostics/windows10/run-windows10-vm.sh inputs/installer.exe diagnostics/windows10/Test-Windows10Startup.ps1 artifacts/windows10; code=$?; echo "$code" > artifacts/windows10/controller-exit-code.txt; exit "$code"' > artifacts/windows10/controller.log 2>&1 &
           echo "$!" > artifacts/windows10/controller.pid
@@ -62,8 +59,58 @@ jobs:
           name: windows10-progress-2
           path: artifacts/windows10/
           retention-days: 7
+      - name: Observe client verification progress 3
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-progress-3
+          path: artifacts/windows10/
+          retention-days: 7
+      - name: Observe client verification progress 4
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-progress-4
+          path: artifacts/windows10/
+          retention-days: 7
+      - name: Observe client verification progress 5
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-progress-5
+          path: artifacts/windows10/
+          retention-days: 7
+      - name: Observe client verification progress 6
+        run: |
+          for attempt in $(seq 1 60); do
+            test ! -f artifacts/windows10/controller-exit-code.txt || break
+            sleep 5
+          done
+          tail -10 artifacts/windows10/controller.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows10-progress-6
+          path: artifacts/windows10/
+          retention-days: 7
       - name: Wait for bounded client verification
         run: |
+          # Controller caps ISO acquisition at 20 minutes and the VM at 30 minutes.
+          # After the six 5-minute snapshots, allow its own deadline and cleanup to finish.
           for attempt in $(seq 1 300); do
             test ! -f artifacts/windows10/controller-exit-code.txt || break
             sleep 5

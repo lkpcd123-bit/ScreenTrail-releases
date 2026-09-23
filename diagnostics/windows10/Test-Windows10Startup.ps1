@@ -1,16 +1,14 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$InstallerPath,
-    [Parameter(Mandatory=$true)][string]$ResultsDirectory,
-    [string]$CandidateUrl,
-    [string]$CandidateSha256='dd1e5069f491e230f35ca314784bd75dfffc791c1635d25011730c6137e6b713'
+    [Parameter(Mandatory=$true)][string]$ResultsDirectory
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 $null = New-Item -ItemType Directory -Path $ResultsDirectory -Force
 $ResultsDirectory = [IO.Path]::GetFullPath($ResultsDirectory)
 $started = Get-Date
-$record = [ordered]@{ schemaVersion=1; startedUtc=$started.ToUniversalTime().ToString('o'); passed=$false; stage='environment'; installationPassed=$false; startupPassed=$false; samples=@(); notes=@(); prerequisiteActions=@() }
+$record = [ordered]@{ schemaVersion=1; version='0.1.16'; releaseState='published compatibility prerelease'; startedUtc=$started.ToUniversalTime().ToString('o'); passed=$false; stage='environment'; installationPassed=$false; startupPassed=$false; samples=@(); notes=@(); prerequisiteActions=@() }
 $installer = $null
 $utf8 = New-Object Text.UTF8Encoding($true)
 function Write-Json([string]$Name, $Value) {
@@ -35,6 +33,7 @@ function Invoke-Helper([string]$Script, [string]$Arguments, [int]$TimeoutSeconds
     $start.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $Script + '" ' + $Arguments
     $start.UseShellExecute=$false; $start.CreateNoWindow=$true
     $child = [Diagnostics.Process]::Start($start)
+    $null=$child.Handle
     try {
         if (-not $child.WaitForExit($TimeoutSeconds*1000)) { $child.Kill(); $null=$child.WaitForExit(5000); return $false }
         return ($child.ExitCode -eq 0)
@@ -46,7 +45,39 @@ $vcHelper = Join-Path $ResultsDirectory 'prerequisite-ui-helper.ps1'
 [IO.File]::WriteAllText($vcHelper, @'
 param([int]$InstallerId,[string]$ResultPath)
 $ErrorActionPreference='Stop'
-Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class VcNativeControls {
+    public delegate bool EnumProc(IntPtr h,IntPtr p);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p,IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h,EnumProc p,IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent,IntPtr child);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+    [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW",CharSet=CharSet.Unicode)] static extern IntPtr TextMessage(IntPtr h,uint m,UIntPtr w,StringBuilder l,uint flags,uint timeout,out UIntPtr result);
+    [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW")] static extern IntPtr Message(IntPtr h,uint m,UIntPtr w,IntPtr l,uint flags,uint timeout,out UIntPtr result);
+    public class Control { public long Handle; public string Text; public string ClassName; public bool Enabled; public bool Visible; public long CheckState; }
+    static bool Owned(IntPtr h,int pid) { uint owner; GetWindowThreadProcessId(h,out owner); return owner==pid; }
+    static string Text(IntPtr h) { var s=new StringBuilder(257); UIntPtr value; TextMessage(h,0x000D,(UIntPtr)257,s,2,300,out value); return s.ToString(); }
+    static string Class(IntPtr h) { var s=new StringBuilder(80); GetClassName(h,s,s.Capacity); return s.ToString(); }
+    static long Check(IntPtr h) { UIntPtr value; return Message(h,0x00F0,UIntPtr.Zero,IntPtr.Zero,2,300,out value)==IntPtr.Zero ? -1 : (long)value.ToUInt64(); }
+    static Control Read(IntPtr h) { var cls=Class(h); return new Control { Handle=h.ToInt64(),Text=Text(h),ClassName=cls,Enabled=IsWindowEnabled(h),Visible=IsWindowVisible(h),CheckState=cls.Equals("Button",StringComparison.OrdinalIgnoreCase)?Check(h):-1 }; }
+    public static Control[] Windows(int pid) { var items=new List<Control>(); EnumWindows((h,l)=> { if(Owned(h,pid)&&IsWindowVisible(h)) items.Add(Read(h)); return true; },IntPtr.Zero); return items.ToArray(); }
+    public static Control[] Children(int pid,long parent) { var items=new List<Control>(); var root=new IntPtr(parent); if(!Owned(root,pid)) return items.ToArray(); EnumChildWindows(root,(h,l)=> { if(Owned(h,pid)&&IsChild(root,h)) items.Add(Read(h)); return items.Count<120; },IntPtr.Zero); return items.ToArray(); }
+    public static bool Click(int pid,long parent,long handle,string expectedText,bool uncheckedOnly) {
+        var root=new IntPtr(parent); var child=new IntPtr(handle);
+        if(!Owned(root,pid)||!Owned(child,pid)||!IsChild(root,child)||!IsWindowVisible(child)||!IsWindowEnabled(child)||!Class(child).Equals("Button",StringComparison.OrdinalIgnoreCase)||Text(child)!=expectedText) return false;
+        if(uncheckedOnly&&Check(child)!=0) return false;
+        SetForegroundWindow(root); UIntPtr value; return Message(child,0x00F5,UIntPtr.Zero,IntPtr.Zero,2,1000,out value)!=IntPtr.Zero;
+    }
+}
+"@
 $actions=@()
 try {
     $all=@(Get-CimInstance Win32_Process)
@@ -60,28 +91,38 @@ try {
         if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
             $actions += @{ processId=$candidate.ProcessId; action='refused-unverified-prerequisite'; signature=[string]$signature.Status }; continue
         }
-        $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$candidate.ProcessId)
-        $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$condition)
-        foreach($window in $windows) {
-            $title=$window.Current.Name
-            if($title -notmatch 'Microsoft Visual C\+\+.*Redistributable' -or $window.Current.IsOffscreen) { continue }
-            $controls=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-            $actions += @{ processId=$candidate.ProcessId; title=$title; action='observed'; controls=@($controls | ForEach-Object { @{ name=$_.Current.Name; type=$_.Current.ControlType.ProgrammaticName; enabled=$_.Current.IsEnabled } }) }
+        # Burn exposes owner-drawn checkboxes as UIA Pane. Use exact native button
+        # handles only after validating the installer's process ancestry and signature.
+        foreach($window in [VcNativeControls]::Windows([int]$candidate.ProcessId)) {
+            if($window.Text -notmatch '^Microsoft Visual C\+\+.*Redistributable') { continue }
+            $controls=@([VcNativeControls]::Children([int]$candidate.ProcessId,$window.Handle))
+            $actions += @{ processId=$candidate.ProcessId; title=$window.Text; action='observed-native-controls'; controls=$controls }
+            $installEnabled=@($controls | Where-Object { $_.ClassName -eq 'Button' -and ($_.Text -replace '&','').Trim() -eq 'Install' -and $_.Enabled -and $_.Visible }).Count -gt 0
             foreach($control in $controls) {
-                if($control.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox -and $control.Current.Name -match 'agree.*license terms' -and $control.Current.IsEnabled) {
-                    $toggle=$control.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-                    if($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) { $toggle.Toggle(); $actions += @{ action='accept-bundled-microsoft-vc-license'; processId=$candidate.ProcessId } }
+                $caption=($control.Text -replace '&','').Trim()
+                if(-not $installEnabled -and $control.ClassName -eq 'Button' -and $caption -match '^I agree to the licen[cs]e terms and conditions\.?$' -and $control.CheckState -eq 0) {
+                    $clicked=[VcNativeControls]::Click([int]$candidate.ProcessId,$window.Handle,$control.Handle,$control.Text,$true)
+                    $actions += @{ action='accept-bundled-microsoft-vc-license-native'; processId=$candidate.ProcessId; handle=$control.Handle; clicked=$clicked }
                 }
             }
-            foreach($control in $controls) {
-                $name=$control.Current.Name -replace '&',''
-                if($control.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $name -eq 'Install' -and $control.Current.IsEnabled) {
-                    $control.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                    $actions += @{ action='install-bundled-microsoft-vc-runtime'; processId=$candidate.ProcessId }; break
-                }
-                if($control.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $name -eq 'Close' -and $control.Current.IsEnabled) {
-                    $control.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                    $actions += @{ action='close-bundled-microsoft-vc-result'; processId=$candidate.ProcessId }; break
+            # Re-enumerate because accepting the checkbox enables Install immediately.
+            $buttons=@([VcNativeControls]::Children([int]$candidate.ProcessId,$window.Handle) | Where-Object { $_.ClassName -eq 'Button' -and $_.Enabled -and $_.Visible })
+            $installButtons=@($buttons | Where-Object { ($_.Text -replace '&','').Trim() -eq 'Install' })
+            if($installButtons.Count -gt 0) {
+                $control=$installButtons[0]
+                $clicked=[VcNativeControls]::Click([int]$candidate.ProcessId,$window.Handle,$control.Handle,$control.Text,$false)
+                $actions += @{ action='bundled-microsoft-vc-install-native'; processId=$candidate.ProcessId; handle=$control.Handle; clicked=$clicked }
+            } else {
+                # Close only after real installation; never dismiss an unaccepted
+                # license or an installation failure just to make the parent continue.
+                $installed=Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
+                if($null -ne $installed -and $installed.Installed -eq 1) {
+                    $closeButtons=@($buttons | Where-Object { ($_.Text -replace '&','').Trim() -eq 'Close' })
+                    if($closeButtons.Count -gt 0) {
+                        $control=$closeButtons[0]
+                        $clicked=[VcNativeControls]::Click([int]$candidate.ProcessId,$window.Handle,$control.Handle,$control.Text,$false)
+                        $actions += @{ action='bundled-microsoft-vc-close-success-native'; processId=$candidate.ProcessId; handle=$control.Handle; clicked=$clicked }
+                    }
                 }
             }
         }
@@ -101,7 +142,7 @@ try {
     $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$condition)
     foreach($window in $windows) {
         $children=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-        $controls=@($children | ForEach-Object { @{ name=$_.Current.Name; type=$_.Current.ControlType.ProgrammaticName; enabled=$_.Current.IsEnabled; offscreen=$_.Current.IsOffscreen } })
+        $controls=@($children | ForEach-Object { @{ name=$_.Current.Name.Substring(0,[Math]::Min(256,$_.Current.Name.Length)); type=$_.Current.ControlType.ProgrammaticName; enabled=$_.Current.IsEnabled; offscreen=$_.Current.IsOffscreen } })
         $result.windows += @{ title=$window.Current.Name; offscreen=$window.Current.IsOffscreen; enabled=$window.Current.IsEnabled; controls=$controls }
         $search=@($controls | Where-Object { $_.name -ceq '최근 샷 검색' -and $_.type -eq 'ControlType.Edit' -and $_.enabled -and -not $_.offscreen })
         if($window.Current.Name -ceq 'ScreenTrail' -and -not $window.Current.IsOffscreen -and $search.Count -eq 1) { $result.passed=$true }
@@ -126,6 +167,7 @@ function Test-AppVariant([string]$Executable,[string]$Prefix) {
         $startInfo.EnvironmentVariables['COREHOST_TRACEFILE']=Join-Path $ResultsDirectory ($Prefix+'-corehost-trace.log')
         $startInfo.EnvironmentVariables['COREHOST_TRACE_VERBOSITY']='4'
         $app=[Diagnostics.Process]::Start($startInfo)
+        $null=$app.Handle
         $variant.processId=$app.Id; $variant.launchUtc=$launchStarted.ToUniversalTime().ToString('o')
         $stderrTask=$app.StandardError.ReadToEndAsync(); $stdoutTask=$app.StandardOutput.ReadToEndAsync()
         foreach ($at in @(3,10,30)) {
@@ -159,7 +201,7 @@ function Test-AppVariant([string]$Executable,[string]$Prefix) {
             $appLog=Join-Path $env:LOCALAPPDATA 'ScreenTrail\Logs\app.log'
             if (Test-Path -LiteralPath $appLog) { Copy-Item -LiteralPath $appLog -Destination (Join-Path $ResultsDirectory ($Prefix+'-app.log')) -Force }
         } catch { $variant.notes += ('Event/log collection: '+$_.Exception.Message) }
-        # The baseline must release its mutex before the candidate is started.
+        # Dispose only this disposable guest's own application after recording diagnostics.
         if ($null -ne $app) {
             try {
                 $app.Refresh(); $variant.aliveAfterDiagnostics=-not $app.HasExited
@@ -222,20 +264,23 @@ public static class StartupWindows {
     }
 }
 '@
-    $record.stage='verify-published-installer'
+    $record.stage='verify-compatibility-prerelease-installer'
     $file=Get-Item -LiteralPath $InstallerPath
     $hash=(Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $record.installer=@{ path=$file.FullName; bytes=$file.Length; sha256=$hash }
-    if ($file.Length -ne 894056049 -or $hash -cne '36e9b34c7bdec0739fb52de6aeeee57e1c212ac37f20b1b5a3fd7832b507e77e') { throw 'Installer does not match the published 0.1.15 artifact.' }
+    if ($file.Length -ne 894021291 -or $hash -cne 'e00b82b8077786483b1c3e7caa4d61dc35cf16f4c418c57a5af0ff06aecad0e8') { throw 'Installer does not match the pinned compatibility prerelease 0.1.16 artifact.' }
     $record.stage='install'
     $installStarted=Get-Date
     $installer=Start-Process -FilePath $file.FullName -ArgumentList '/S' -PassThru
+    $null=$installer.Handle # Cache the native handle before process completion on Windows PowerShell 5.1.
     $record.installer.processId=$installer.Id
     $attempt=0
-    while (-not $installer.HasExited -and ((Get-Date)-$installStarted).TotalSeconds -lt 480) {
+    while (-not $installer.HasExited -and ((Get-Date)-$installStarted).TotalSeconds -lt 720) {
         Start-Sleep -Seconds 4
         $installer.Refresh()
         if ($installer.HasExited) { break }
+        # Do not compete with payload extraction by compiling helpers before VC starts.
+        if (-not (Get-Process -Name 'VC_redist.x64' -ErrorAction SilentlyContinue)) { continue }
         $attempt++
         $vcResult=Join-Path $ResultsDirectory ('prerequisite-ui-{0:d3}.json' -f $attempt)
         $completed=Invoke-Helper $vcHelper ('-InstallerId '+$installer.Id+' -ResultPath "'+$vcResult+'"') 15
@@ -250,10 +295,10 @@ public static class StartupWindows {
     $record.installer.elapsedSeconds=[Math]::Round(((Get-Date)-$installStarted).TotalSeconds,2)
     $record.installer.timedOut=-not $installer.HasExited
     Save-InstallerState
-    if (-not $installer.HasExited) { throw 'Published installer did not finish within eight minutes; process/window evidence was preserved.' }
+    if (-not $installer.HasExited) { throw 'compatibility prerelease installer did not finish within twelve minutes; process/window evidence was preserved.' }
     $record.installer.exitCode=$installer.ExitCode
     $record.vcAfter=Get-VcState
-    if ($installer.ExitCode -ne 0) { throw ('Published installer failed with exit code '+$installer.ExitCode) }
+    if ($installer.ExitCode -ne 0) { throw ('compatibility prerelease installer failed with exit code '+$installer.ExitCode) }
     $record.stage='verify-installation'
     $registered=Get-ItemProperty -LiteralPath $registration
     $record.registration=@{ version=$registered.DisplayVersion; location=$registered.InstallLocation }
@@ -261,7 +306,7 @@ public static class StartupWindows {
     $executable=Join-Path $installDirectory 'ScreenTrail.exe'
     $marker=[IO.File]::ReadAllText((Join-Path $installDirectory '.screentrail-install')).Trim()
     $record.installed=@{ marker=$marker; fileVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo($executable).FileVersion; executable=$executable; shortcutExists=(Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) 'ScreenTrail.lnk')) }
-    if ($registered.DisplayVersion -cne '0.1.15' -or $marker -cne 'ScreenTrail 0.1.15' -or $record.installed.fileVersion -notmatch '^0\.1\.15\.0(?:\s|\+|$)') { throw 'Installed version or marker does not match 0.1.15.' }
+    if ($registered.DisplayVersion -cne '0.1.16' -or $marker -cne 'ScreenTrail 0.1.16' -or $record.installed.fileVersion -notmatch '^0\.1\.16\.0(?:\s|\+|$)') { throw 'Installed version or marker does not match 0.1.16.' }
     $reportPath=Join-Path $env:LOCALAPPDATA 'ScreenTrail\Logs\install-latest.json'
     $installReport=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
     if ($installReport.status -ne 'completed' -or -not $installReport.committed) { throw 'Authoritative installation report did not commit successfully.' }
@@ -269,33 +314,13 @@ public static class StartupWindows {
     $identityFiles=@('ScreenTrail.exe','ScreenTrail.dll','ScreenTrail.runtimeconfig.json','ScreenTrail.deps.json','hostfxr.dll','hostpolicy.dll','coreclr.dll','PresentationNative_cor3.dll','wpfgfx_cor3.dll','package-manifest.json')
     Write-Json 'installed-file-hashes.json' @($identityFiles | ForEach-Object { $item=Get-Item -LiteralPath (Join-Path $installDirectory $_); @{ name=$item.Name; bytes=$item.Length; sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); version=$item.VersionInfo.FileVersion } })
 
-    $record.stage='launch-published-app'
-    $baseline=Test-AppVariant $executable 'baseline'
-    $record.baseline=$baseline
-    $record.startupPassed=$baseline.passed
-    if ($baseline.Contains('cleanupFailed') -and $baseline.cleanupFailed) { throw 'Baseline cleanup failed; refusing a competing candidate launch.' }
-    if ($CandidateUrl) {
-        $record.stage='verify-candidate'
-        $candidatePath=Join-Path $installDirectory 'ScreenTrail.CetDiagnostic.exe'
-        if (Test-Path -LiteralPath $candidatePath) { throw 'Refusing to replace an existing diagnostic executable.' }
-        Invoke-WebRequest -UseBasicParsing -Uri $CandidateUrl -OutFile $candidatePath -TimeoutSec 60
-        $candidateHash=(Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($candidateHash -cne $CandidateSha256.ToLowerInvariant()) { throw 'Candidate hash did not match its pinned identity.' }
-        $originalBytes=[IO.File]::ReadAllBytes($executable)
-        $candidateBytes=[IO.File]::ReadAllBytes($candidatePath)
-        if ($originalBytes.Length -ne $candidateBytes.Length) { throw 'Candidate length differs from the original apphost.' }
-        $differences=@(for($index=0;$index -lt $originalBytes.Length;$index++) { if($originalBytes[$index] -ne $candidateBytes[$index]) { $index } })
-        $record.candidateIdentity=@{ sha256=$candidateHash; bytes=$candidateBytes.Length; changedOffsets=$differences; originalSha256=(Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() }
-        if ($differences.Count -ne 1 -or $differences[0] -ne 0x21ac0 -or $originalBytes[0x21ac0] -ne 1 -or $candidateBytes[0x21ac0] -ne 0) { throw 'Candidate is not the expected isolated one-byte CET compatibility change.' }
-        $record.stage='launch-cet-candidate'
-        $candidate=Test-AppVariant $candidatePath 'candidate'
-        $record.candidate=$candidate
-        $record.cetHypothesisReproduced=(-not $baseline.passed -and $candidate.passed)
-        $record.cetFailureSignatureWithCandidateRecovery=($record.cetHypothesisReproduced -and $baseline.cetRuntimeFailureObserved)
-    }
-    $record.passed=$baseline.passed -and (-not $CandidateUrl -or $record.candidate.passed)
+    $record.stage='launch-compatibility-prerelease-app'
+    $candidate=Test-AppVariant $executable 'candidate'
+    $record.candidate=$candidate
+    $record.startupPassed=$candidate.passed
+    $record.passed=$candidate.passed
     $record.stage='completed'
-    if (-not $record.passed) { $record.failure='Published baseline or optional diagnostic candidate failed; see per-variant evidence.' }
+    if (-not $record.passed) { $record.failure='compatibility prerelease startup failed; see candidate evidence.' }
 
 } catch {
     $record.failure=$_.Exception.Message
@@ -318,6 +343,6 @@ public static class StartupWindows {
     $record.finishedUtc=[DateTime]::UtcNow.ToString('o')
     Write-Json 'result.json' $record
 }
-if ($record.passed) { Write-Host 'PASS: exact published 0.1.15 installed and displayed its responsive dashboard on Windows 10.'; exit 0 }
+if ($record.passed) { Write-Host 'PASS: exact compatibility prerelease 0.1.16 installed and displayed its responsive dashboard on Windows 10.'; exit 0 }
 Write-Host ('FAIL at '+$record.stage+': '+$record.failure)
 exit 1
