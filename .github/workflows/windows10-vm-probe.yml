@@ -1,0 +1,21 @@
+name: Check disposable Windows 10 VM capability
+on:
+  push:
+    branches: [codex/published-startup-015-20260923]
+    paths: [.github/workflows/windows10-vm-probe.yml]
+permissions:
+  contents: read
+jobs:
+  kvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check hardware virtualization on the disposable runner
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, platform, shutil
+          print(json.dumps({'os':platform.platform(),'kvmDevice':os.path.exists('/dev/kvm'),'qemu':shutil.which('qemu-system-x86_64'),'diskFreeGiB':round(shutil.disk_usage('/').free/1024**3,1)},indent=2))
+          PY
+          lscpu | grep -E 'Model name|Virtualization|Hypervisor|CPU\(s\)'
+          if test -e /dev/kvm; then ls -l /dev/kvm; fi
