@@ -1,0 +1,83 @@
+{
+  "createdAt": "2026-09-23T06:24:39.317885+00:00",
+  "purpose": "Unpublished diagnostic A/B apphost for Windows 10 startup failure; CET hypothesis unconfirmed on affected PC",
+  "build": {
+    "sdk": "10.0.401",
+    "sourceCopy": "/Users/igkim/Documents/Codex/ScreenTrail-cet-compat-20260923/source",
+    "command": "dotnet publish src/ScreenTrail/ScreenTrail.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -p:CETCompat=false -p:RestoreLockedMode=true -o ../publish",
+    "exitCode": 0,
+    "buildLog": "/Users/igkim/Documents/Codex/ScreenTrail-cet-compat-20260923/build.log",
+    "copiedSourceFilesChanged": []
+  },
+  "baseline": {
+    "path": "/Users/igkim/Documents/Codex/ScreenTrail-windows10-20260923/full-payload/ScreenTrail.exe",
+    "bytes": 187392,
+    "sha256": "47ba76f9ddc3a05e893bb926eb1cb938008a135f4bc50b4f30140b7adb41a14c",
+    "fileVersion": "0.1.15.0",
+    "coffTimeDateStamp": 1787363328,
+    "checksum": 0,
+    "cet": {
+      "debugType": 20,
+      "dataFileOffset": 137920,
+      "dataFileOffsetHex": "0x21ac0",
+      "flags": 1,
+      "enabled": true
+    },
+    "embeddedManagedTargetScreenTrailDll": true
+  },
+  "candidate": {
+    "path": "/Users/igkim/Documents/Codex/ScreenTrail-cet-compat-20260923/candidate/ScreenTrail.exe",
+    "bytes": 187392,
+    "sha256": "dd1e5069f491e230f35ca314784bd75dfffc791c1635d25011730c6137e6b713",
+    "fileVersion": "0.1.15.0",
+    "coffTimeDateStamp": 1787363328,
+    "checksum": 0,
+    "cet": {
+      "debugType": 20,
+      "dataFileOffset": 137920,
+      "dataFileOffsetHex": "0x21ac0",
+      "flags": 0,
+      "enabled": false
+    },
+    "embeddedManagedTargetScreenTrailDll": true
+  },
+  "comparison": {
+    "equalLength": true,
+    "changedByteCount": 1,
+    "changes": [
+      {
+        "fileOffset": 137920,
+        "fileOffsetHex": "0x21ac0",
+        "original": 1,
+        "candidate": 0
+      }
+    ],
+    "onlyCetCompatibilityFlagChanged": true,
+    "allOtherBytesIdentical": true,
+    "versionIconResourcesIdentical": true,
+    "managedTargetNameIdentical": true
+  },
+  "abInstructions": {
+    "useOnlyCandidateExe": true,
+    "usePublishedManagedDllAndRuntimeUnchanged": true,
+    "keepBaselineForRestoration": true,
+    "doNotUseFreshlyBuiltManagedDll": true
+  },
+  "sourceProposal": {
+    "path": "/Users/igkim/Documents/Codex/ScreenTrail-cet-compat-20260923/source-change-proposal.patch",
+    "applied": false
+  },
+  "originalPayloadManifestSha256": "c93743f36c6ea870e991bdfc4b9dfb7c4dc9f1ebf304b96fa54aa6beb2444ccd",
+  "verificationLimits": {
+    "runOnWindows10": false,
+    "affectedMachineCauseConfirmed": false,
+    "productSourceChanged": false,
+    "publishedReleaseChanged": false
+  },
+  "sources": [
+    "https://learn.microsoft.com/en-us/dotnet/core/compatibility/interop/9.0/cet-support",
+    "https://github.com/dotnet/runtime/issues/128540",
+    "https://github.com/dotnet/runtime/issues/108589#issuecomment-2396857957",
+    "https://github.com/dotnet/runtime/blob/v10.0.12/src/coreclr/vm/threads.cpp#L7060-L7071"
+  ]
+}

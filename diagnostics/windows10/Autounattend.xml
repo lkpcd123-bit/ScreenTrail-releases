@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+      <InputLocale>0409:00000409</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Size>500</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Label>System</Label><Format>NTFS</Format><Active>true</Active></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID><Label>Windows</Label><Format>NTFS</Format><Letter>C</Letter></ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+        <WillShowUI>OnError</WillShowUI>
+      </DiskConfiguration>
+      <ImageInstall><OSImage>
+        <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>1</Value></MetaData></InstallFrom>
+        <InstallTo><DiskID>0</DiskID><PartitionID>2</PartitionID></InstallTo>
+        <WillShowUI>OnError</WillShowUI>
+      </OSImage></ImageInstall>
+      <UserData><AcceptEula>true</AcceptEula><FullName>ScreenTrail Smoke Test</FullName><Organization>Disposable compatibility test</Organization></UserData>
+      <DynamicUpdate><Enable>false</Enable></DynamicUpdate>
+    </component>
+  </settings>
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>cmd.exe /c sc.exe config wuauserv start= disabled</Path><Description>Keep the disposable test guest at the verified ISO build</Description></RunSynchronousCommand></RunSynchronous>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <ComputerName>ST-WIN10-SMOKE</ComputerName><TimeZone>UTC</TimeZone>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>0409:00000409</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAccounts><AdministratorPassword><Value>__DISPOSABLE_PASSWORD__</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
+      <AutoLogon><Username>Administrator</Username><Enabled>true</Enabled><LogonCount>2</LogonCount><Password><Value>__DISPOSABLE_PASSWORD__</Value><PlainText>true</PlainText></Password></AutoLogon>
+      <OOBE><HideEULAPage>true</HideEULAPage><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
+      <Display><ColorDepth>32</ColorDepth><HorizontalResolution>1280</HorizontalResolution><VerticalResolution>800</VerticalResolution></Display>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add">
+        <Order>1</Order>
+        <CommandLine>cmd.exe /c start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$s = Get-Volume | Where-Object FileSystemLabel -eq 'STSMOKE' | Select-Object -First 1; &amp; (Join-Path ($s.DriveLetter + ':\') 'bootstrap.ps1')"</CommandLine>
+        <Description>Run published ScreenTrail launch test on the Windows 10 desktop</Description>
+      </SynchronousCommand></FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>
