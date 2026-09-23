@@ -11,7 +11,7 @@ $createdZips=@()
 try {
     $archive=Join-Path $PSScriptRoot 'ScreenTrail-Windows10-Startup-Diagnostic.zip'
     $result.bundleSha256=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-    if($result.bundleSha256 -cne '693e3ccc327bff70ded3afbab7b4f5970a6bb4eb6e2a336df071de5eac0e8de9') { throw 'The local probe ZIP changed from its reviewed bytes.' }
+    if($result.bundleSha256 -cne 'bb200bbbbc6e0adddd23b452fdbdbab921ad5722f44e3ce41d9c3f1ec6684fc6') { throw 'The local probe ZIP changed from its reviewed bytes.' }
     $tools=Join-Path $env:RUNNER_TEMP 'ScreenTrail-startup-probe'
     Expand-Archive -LiteralPath $archive -DestinationPath $tools
     $entries=@(Get-ChildItem -LiteralPath $tools -File | ForEach-Object Name | Sort-Object)
@@ -69,14 +69,60 @@ try {
     if(-not (Test-Path -LiteralPath (Join-Path $reports 'dotnet-host-trace.log'))) { throw 'Per-process host tracing was not captured.' }
     if((Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedAppHash) { throw 'Installed original apphost changed during the probe.' }
     $result.os=$report.os; $result.application=$report.application; $result.reportFiles=@($files | ForEach-Object Name)
-    $result.samples=$report.samples; $result.privacySentinelExcluded=$true; $result.originalExecutableUnchanged=$true; $result.passed=$true
+    $result.samples=$report.samples; $result.privacySentinelExcluded=$true; $result.originalExecutableUnchanged=$true
+    $result.actualScreenTrailHealthyCasePassed=$true
+
+    # Separate synthetic early-exit proof: the collector must retain exit code 42.
+    # Stop only the healthy process launched by this test, after proving the probe
+    # left it alive. Never replace the installed executable.
+    if($application.Path -ine $executable) { throw 'Refusing to stop a process outside the verified installation.' }
+    $null=$application.Handle
+    $application.Kill()
+    if(-not $application.WaitForExit(10000)) { throw 'The test-owned healthy app did not exit before the synthetic fixture.' }
+    $application.Dispose()
+    $result.testOwnedAppStoppedForSyntheticFixture=$true
+    $registration='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ScreenTrail'
+    $originalLocation=(Get-ItemProperty -LiteralPath $registration).InstallLocation
+    try {
+        $fixture=Join-Path $env:RUNNER_TEMP ('ScreenTrail-exit42-'+[Guid]::NewGuid().ToString('N'))
+        $null=New-Item -ItemType Directory -Path $fixture
+        $fixtureExe=Join-Path $fixture 'ScreenTrail.exe'
+        Add-Type -TypeDefinition @'
+using System.Reflection;
+[assembly: AssemblyFileVersion("0.0.42.0")]
+public static class SyntheticScreenTrailExit42 { public static int Main() { return 42; } }
+'@ -OutputAssembly $fixtureExe -OutputType WindowsApplication
+        Set-ItemProperty -LiteralPath $registration -Name InstallLocation -Value $fixture
+        $beforeFixture=@(Get-ChildItem -LiteralPath $desktop -Filter 'ScreenTrail-*.zip' -File | ForEach-Object FullName)
+        $fixtureProbe=[Diagnostics.Process]::Start($start)
+        $null=$fixtureProbe.Handle
+        try {
+            if(-not $fixtureProbe.WaitForExit(90000)) { $fixtureProbe.Kill(); throw 'Synthetic-case diagnostic exceeded ninety seconds.' }
+            if($fixtureProbe.ExitCode -ne 0) { throw ('Synthetic-case diagnostic failed: '+$fixtureProbe.ExitCode) }
+        } finally { $fixtureProbe.Dispose() }
+        $fixtureZips=@(Get-ChildItem -LiteralPath $desktop -Filter 'ScreenTrail-*.zip' -File | Where-Object { $_.FullName -notin $beforeFixture })
+        $createdZips += $fixtureZips
+        if($fixtureZips.Count -ne 1) { throw 'Synthetic early exit did not produce exactly one report ZIP.' }
+        $fixtureReports=Join-Path $output 'synthetic-exit42-report'
+        Expand-Archive -LiteralPath $fixtureZips[0].FullName -DestinationPath $fixtureReports
+        $earlyExit=Get-Content -LiteralPath (Join-Path $fixtureReports 'result.json') -Raw | ConvertFrom-Json
+        if(-not $earlyExit.diagnosticCompleted -or -not $earlyExit.applicationStarted -or $earlyExit.samples.Count -ne 2) { throw 'Synthetic early-exit diagnostic did not complete its samples.' }
+        foreach($sample in $earlyExit.samples) {
+            if(-not $sample.exited -or $sample.exitCode -ne 42 -or $sample.exitCodeHex -cne '0x0000002A') { throw 'Synthetic early-exit code 42 was lost or incorrectly reported.' }
+        }
+        if($earlyExit.application.path -ine $fixtureExe -or $earlyExit.application.sha256 -cne (Get-FileHash -LiteralPath $fixtureExe -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Synthetic fixture identity was not recorded correctly.' }
+        $result.syntheticEarlyExit=@{ passed=$true; source='Test-only .NET Framework executable returning 42, not ScreenTrail failure reproduction.'; reportZip=$fixtureZips[0].Name; samples=$earlyExit.samples }
+    } finally { Set-ItemProperty -LiteralPath $registration -Name InstallLocation -Value $originalLocation }
+    if((Get-ItemProperty -LiteralPath $registration).InstallLocation -cne $originalLocation -or (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedAppHash) { throw 'Original installation identity was not preserved after the synthetic case.' }
+    $result.originalRegistrationRestored=$true
+    $result.passed=$true
 } catch { $result.failure=$_.Exception.Message; throw }
 finally {
     # Preserve the diagnostic's own exception details even if it could not zip.
     $folders=@(Get-ChildItem -LiteralPath $desktop -Directory -Filter 'ScreenTrail-*' -ErrorAction SilentlyContinue)
     foreach($folder in $folders) {
         $metadata=Join-Path $folder.FullName 'result.json'
-        if(Test-Path -LiteralPath $metadata) { Copy-Item -LiteralPath $metadata -Destination (Join-Path $output 'desktop-probe-result.json') -Force }
+        if(Test-Path -LiteralPath $metadata) { Copy-Item -LiteralPath $metadata -Destination (Join-Path $output ($folder.Name+'-result.json')) -Force }
     }
     foreach($zip in $createdZips) { Copy-Item -LiteralPath $zip.FullName -Destination $output -Force }
     $result.finishedUtc=[DateTime]::UtcNow.ToString('o')
