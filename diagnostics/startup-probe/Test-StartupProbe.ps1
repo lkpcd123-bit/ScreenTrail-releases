@@ -11,7 +11,7 @@ $createdZips=@()
 try {
     $archive=Join-Path $PSScriptRoot 'ScreenTrail-Windows10-Startup-Diagnostic.zip'
     $result.bundleSha256=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-    if($result.bundleSha256 -cne 'ceb3d25791a62c39712987090ba50eefb2b3e49e063083535108037a01c49ee7') { throw 'The local probe ZIP changed from its reviewed bytes.' }
+    if($result.bundleSha256 -cne '693e3ccc327bff70ded3afbab7b4f5970a6bb4eb6e2a336df071de5eac0e8de9') { throw 'The local probe ZIP changed from its reviewed bytes.' }
     $tools=Join-Path $env:RUNNER_TEMP 'ScreenTrail-startup-probe'
     Expand-Archive -LiteralPath $archive -DestinationPath $tools
     $entries=@(Get-ChildItem -LiteralPath $tools -File | ForEach-Object Name | Sort-Object)
@@ -72,6 +72,12 @@ try {
     $result.samples=$report.samples; $result.privacySentinelExcluded=$true; $result.originalExecutableUnchanged=$true; $result.passed=$true
 } catch { $result.failure=$_.Exception.Message; throw }
 finally {
+    # Preserve the diagnostic's own exception details even if it could not zip.
+    $folders=@(Get-ChildItem -LiteralPath $desktop -Directory -Filter 'ScreenTrail-*' -ErrorAction SilentlyContinue)
+    foreach($folder in $folders) {
+        $metadata=Join-Path $folder.FullName 'result.json'
+        if(Test-Path -LiteralPath $metadata) { Copy-Item -LiteralPath $metadata -Destination (Join-Path $output 'desktop-probe-result.json') -Force }
+    }
     foreach($zip in $createdZips) { Copy-Item -LiteralPath $zip.FullName -Destination $output -Force }
     $result.finishedUtc=[DateTime]::UtcNow.ToString('o')
     $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $output 'probe-verification.json') -Encoding UTF8
