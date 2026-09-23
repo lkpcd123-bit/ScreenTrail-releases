@@ -1,0 +1,34 @@
+name: DRAFT 0.1.16 candidate install and startup smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/published-startup-015-20260923]
+    paths:
+      - .github/workflows/windows-candidate-startup.yml
+      - scripts/Test-CandidateInstallSmoke.ps1
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install exact DRAFT candidate bytes and verify visible startup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_ASSET_ID: '583177923'
+        shell: powershell
+        run: ./scripts/Test-CandidateInstallSmoke.ps1 -AssetId $env:DRAFT_ASSET_ID
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-server-candidate-startup-0.1.16
+          path: artifacts/candidate-startup/
+          retention-days: 14
+          if-no-files-found: warn
