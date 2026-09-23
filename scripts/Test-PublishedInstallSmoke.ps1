@@ -68,6 +68,8 @@ try {
     $report.stage = 'launch'
     & (Join-Path $PSScriptRoot 'Test-PublishedStartup.ps1') -Executable (Join-Path $destination 'ScreenTrail.exe') -OutputDirectory $output
     $report.startupPassed = $true
+    $report.stage = 'reopen-diagnostic'
+    & (Join-Path $PSScriptRoot 'Test-PublishedReopen.ps1') -Executable (Join-Path $destination 'ScreenTrail.exe') -OutputDirectory $output
     $report.stage = 'completed'
     $report.completed = $true
     Write-Host "PASS: ScreenTrail $($report.registeredVersion) installed on $($report.os), exit $($report.installerExitCode), $($report.installSeconds) seconds."

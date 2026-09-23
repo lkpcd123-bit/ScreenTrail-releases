@@ -8,13 +8,14 @@ on:
       - .github/workflows/windows-install-smoke.yml
       - scripts/Test-PublishedInstallSmoke.ps1
       - scripts/Test-PublishedStartup.ps1
+      - scripts/Test-PublishedReopen.ps1
 
 permissions:
   contents: read
 
 jobs:
   install:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
