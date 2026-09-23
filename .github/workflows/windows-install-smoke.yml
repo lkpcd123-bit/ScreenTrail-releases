@@ -1,0 +1,34 @@
+name: Published 0.1.15 install and startup smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/published-startup-015-20260923]
+    paths:
+      - .github/workflows/windows-install-smoke.yml
+      - scripts/Test-PublishedInstallSmoke.ps1
+      - scripts/Test-PublishedStartup.ps1
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install the exact published EXE and verify its visible main window
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: ./scripts/Test-PublishedInstallSmoke.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-server-install-0.1.15
+          path: artifacts/install-smoke/
+          retention-days: 14
+          if-no-files-found: warn
