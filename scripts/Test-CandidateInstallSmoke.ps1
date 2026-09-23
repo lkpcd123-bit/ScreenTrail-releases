@@ -26,8 +26,19 @@ try {
     $runtime = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
     if (-not $runtime -or $runtime.Installed -ne 1) { throw 'The hosted runner needs its standard Visual C++ runtime for this unattended smoke test.' }
     $report.visualCppRuntimeBefore = $runtime.Version
-    & curl.exe --fail --location --retry 2 --silent --show-error --max-time 240 --header "Authorization: Bearer $env:GH_TOKEN" --header 'Accept: application/octet-stream' --output $installer ("https://api.github.com/repos/ikk5515/ScreenTrail-releases/releases/assets/" + $AssetId)
-    if ($LASTEXITCODE -ne 0) { throw "Installer download failed: $LASTEXITCODE" }
+    & curl.exe --fail-with-body --location --retry 2 --silent --show-error --max-time 240 --header "Authorization: Bearer $env:GH_TOKEN" --header 'Accept: application/octet-stream' --output $installer ("https://api.github.com/repos/ikk5515/ScreenTrail-releases/releases/assets/" + $AssetId)
+    $downloadExitCode = $LASTEXITCODE
+    if ($downloadExitCode -ne 0) {
+        $report.downloadExitCode = $downloadExitCode
+        # Retain only GitHub's bounded JSON message, never request headers or signed URLs.
+        if ((Test-Path -LiteralPath $installer -PathType Leaf) -and (Get-Item -LiteralPath $installer).Length -le 65536) {
+            try {
+                $downloadError = Get-Content -LiteralPath $installer -Raw | ConvertFrom-Json
+                if ($downloadError.message -is [string]) { $report.downloadErrorMessage = $downloadError.message.Substring(0,[Math]::Min(2048,$downloadError.message.Length)); Write-Warning $report.downloadErrorMessage }
+            } catch { }
+        }
+        throw "Installer download failed: $downloadExitCode"
+    }
     $report.stage = 'verify-download'
     $report.installerBytes = (Get-Item -LiteralPath $installer).Length
     $report.installerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()

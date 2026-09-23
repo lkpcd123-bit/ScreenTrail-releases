@@ -13,6 +13,10 @@ permissions:
 
 jobs:
   candidate:
+    # GitHub requires write access to read unpublished draft release assets.
+    # Limit this token to the trusted candidate job; the test never writes releases.
+    permissions:
+      contents: write
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
